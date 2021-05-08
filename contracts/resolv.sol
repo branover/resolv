@@ -3,6 +3,7 @@
 
 pragma solidity >=0.7.0 <0.9.0;
 
+uint256 constant MAX_INT = 2**256 - 1;
 
 contract Resolv {
 	mapping (address => UserStruct) private addressToUser;
@@ -50,16 +51,28 @@ contract Resolv {
 	}
 	
 	function registerUsername(string memory _username) external hasNoUsername(msg.sender) {
+	    // TODO consider allowing a hash of the username to be requested first to prevent frontrunning
 	    require(usernameToAddress[_username] ==  address(0x0), "Username already taken");
-	    UserStruct memory newUser = UserStruct(_username, "", "", 0, defaultPrice, 0, block.number, block.number, true);
+	    UserStruct memory newUser = UserStruct(_username, "", "", 0, MAX_INT, 0, block.number, block.number, true);
 	    addressToUser[msg.sender] = newUser;
 	    usernameToAddress[_username] = msg.sender;
 	    emit RegisterUsernameEvent(msg.sender, _username);
 	}
 	
+	function populateUserData(string memory _name, string memory _email, uint16 _telephoneNumber) external hasUsername(msg.sender) {
+	    UserStruct storage user = addressToUser[msg.sender];
+	    user.name = _name;
+	    user.email = _email;
+	    user.telephoneNumber = _telephoneNumber;
+	    // TODO Maybe emit event?
+	}
+	
 	function getUsername(address _addr) external view hasUsername(_addr) returns (UserStruct memory) {
 	    //TODO Do we want to return the whole struct?  Some of it needs to be processed, not usable in raw form (like price and balance)
-	    return addressToUser[_addr];
+	    UserStruct memory userRaw = addressToUser[_addr];
+	    userRaw.price = getPrice(_addr);
+	    userRaw.balance = getBalance(_addr);
+	    return userRaw;
 	}
 	
 	function getAddress(string memory _username) external view returns (address) {
@@ -68,6 +81,7 @@ contract Resolv {
 	}
 	
 	function cedeUsername() external hasUsername(msg.sender) {
+	    _withdrawBalance(msg.sender); // TODO change to simply adding withdrawable balance to some count to be withdrawn later (maybe?)	    
 	    string memory username = addressToUser[msg.sender].username;
 	    delete usernameToAddress[username];
 	    delete addressToUser[msg.sender];
@@ -78,17 +92,26 @@ contract Resolv {
 	    _transferUsername(msg.sender, _to);
 	}
 	
-	function buyUsername(string memory _username) external {
-	    //TODO Implement
-	    //TODO Burn part of the cost
+	function buyUsername(string memory _username) external hasNoUsername(msg.sender) {
+	    // TODO consider allowing a hash of the username to be requested first to prevent frontrunning
+	    address prevOwner = usernameToAddress[_username];
+	    uint price = getPrice(prevOwner);
+	    if (price == 0) {
+	        _transferUsername(prevOwner, msg.sender);
+	        return;
+	    }
+	    // TODO Check to make sure buyer has enough money
+	    // TODO Check to make sure contract is approved for enough to spend on behalf of buyer
+	    // TODO Burn part of the cost
+	    _transferUsername(prevOwner, msg.sender);
 	}
 	
 	
 	function _transferUsername(address _from, address _to) private hasUsername(_from) hasNoUsername(_to) {
-	    _withdrawBalance(_from);	    
+	    _withdrawBalance(_from); // TODO change to simply adding withdrawable balance to some count to be withdrawn later (maybe?)	    
 	    
 	    UserStruct memory user = addressToUser[_from];
-	    user = UserStruct(user.username, "", "", 0, defaultPrice, 0, block.number, block.number, true);
+	    user = UserStruct(user.username, "", "", 0, MAX_INT, 0, block.number, block.number, true);
 	    addressToUser[_to] = user;
 	    usernameToAddress[user.username] = _to;
 	    
@@ -105,11 +128,18 @@ contract Resolv {
 	    costPerBlock = _cost;
 	}
 
-    function setPrice(uint _price) external hasUsername(msg.sender) {
+    function setPreferredPrice(uint _price) external hasUsername(msg.sender) {
         UserStruct storage user = addressToUser[msg.sender];
-        require(hasPositiveBalance(msg.sender) || _price <= defaultPrice, "Can't set the price above the default unless you have a positive balance");
         // TODO If balance becomes 0 and price is above default, need to readjust to default
         user.price = _price;
+    }
+    
+    function getPrice(address _addr) public view hasUsername(_addr) returns (uint) {
+        UserStruct memory user = addressToUser[_addr];
+        if(hasPositiveBalance(_addr) || user.price <= defaultPrice) {
+            return user.price;
+        }
+        return defaultPrice;
     }
     
     function _withdrawBalance(address _from) private hasUsername(_from) {
