@@ -3,26 +3,37 @@
 
 pragma solidity >=0.7.0 <0.9.0;
 
+import "@openzeppelin/contracts/access/Ownable.sol";
+
 uint256 constant MAX_INT = 2**256 - 1;
 
-contract Resolv {
+contract Resolv is Ownable{
 	mapping (address => UserStruct) private addressToUser;
-	mapping (string => address) private usernameToAddress;
+	mapping (bytes32 => address) private usernameToAddress;
+	mapping (bytes32 => ContactCard) private usernameToContactCard;
+	mapping (address => uint) private withdrawableBalance;
+	
 	uint public defaultPrice;
 	uint public costPerBlock;
+	uint public burnableFees;
+	uint public distributableFees;
+	
 	CheckPoint[] private costPerBlockCheckpoints;
 	
 	
 	struct UserStruct {
-	    string username;
-	    string name;
-	    string email;
-	    uint16 telephoneNumber;
-	    uint price;
+	    bytes32 username;
+	    uint preferredPrice;
 	    uint balance;
 	    uint lastTransfer;
 	    uint lastDeposit;
 	    bool exists;
+	}
+	
+	struct ContactCard {
+	    string name;
+	    string email;
+	    uint16 telephoneNumber;
 	}
 	
 	struct CheckPoint {
@@ -30,14 +41,16 @@ contract Resolv {
 	    uint value;
 	}
 	
-	event CedeEvent(address _from, string username);
-	event RegisterUsernameEvent(address _from, string username);
-	event TransferUsernameEvent(address _from, address _to, string username);
-	event SellUsernameEvent(address _from, address _to, string username, uint price);
+	event CedeEvent(address _from, bytes32 username);
+	event RegisterUsernameEvent(address _from, bytes32 username);
+	event TransferUsernameEvent(address _from, address _to, bytes32 username);
+	event SellUsernameEvent(address _from, address _to, bytes32 username, uint price);
+	event CostPerBlockSet(uint _cost);
+	event DefaultPriceSet(uint _price);
 
-	constructor() {
-	    _setDefaultPrice(100000);
-	    _setCostPerBlock(10);
+	constructor(uint _defaultPrice, uint _costPerBlock) {
+	    _setDefaultPrice(_defaultPrice);
+	    _setCostPerBlock(_costPerBlock);
 	}
 	
 	modifier hasUsername(address _addr) {
@@ -50,41 +63,42 @@ contract Resolv {
 	    _;
 	}
 	
-	function registerUsername(string memory _username) external hasNoUsername(msg.sender) {
+	function registerUsername(bytes32 _username) external hasNoUsername(msg.sender) {
 	    // TODO consider allowing a hash of the username to be requested first to prevent frontrunning
 	    require(usernameToAddress[_username] ==  address(0x0), "Username already taken");
-	    UserStruct memory newUser = UserStruct(_username, "", "", 0, MAX_INT, 0, block.number, block.number, true);
+	    UserStruct memory newUser = UserStruct(_username, MAX_INT, 0, block.number, block.number, true);
 	    addressToUser[msg.sender] = newUser;
 	    usernameToAddress[_username] = msg.sender;
 	    emit RegisterUsernameEvent(msg.sender, _username);
 	}
 	
-	function populateUserData(string memory _name, string memory _email, uint16 _telephoneNumber) external hasUsername(msg.sender) {
+	function setContactCard(string memory _name, string memory _email, uint16 _telephoneNumber) external hasUsername(msg.sender) {
 	    UserStruct storage user = addressToUser[msg.sender];
-	    user.name = _name;
-	    user.email = _email;
-	    user.telephoneNumber = _telephoneNumber;
+	    ContactCard memory newContactCard = ContactCard(_name, _email, _telephoneNumber);
+	    usernameToContactCard[user.username] = newContactCard;
 	    // TODO Maybe emit event?
 	}
 	
-	function getUsername(address _addr) external view hasUsername(_addr) returns (UserStruct memory) {
-	    //TODO Do we want to return the whole struct?  Some of it needs to be processed, not usable in raw form (like price and balance)
+	function getUsername(address _addr) external view hasUsername(_addr) returns (UserStruct memory, ContactCard memory) {
 	    UserStruct memory userRaw = addressToUser[_addr];
-	    userRaw.price = getPrice(_addr);
-	    userRaw.balance = getBalance(_addr);
-	    return userRaw;
+	    userRaw.preferredPrice = getEffectivePrice(_addr);
+	    (userRaw.balance,) = getBalance(_addr);
+	    
+	    ContactCard memory contactCard = usernameToContactCard[userRaw.username];
+	    return (userRaw, contactCard);
 	}
 	
-	function getAddress(string memory _username) external view returns (address) {
+	function getAddress(bytes32 _username) external view returns (address) {
 	    require(usernameToAddress[_username] != address(0x0), "Username has no associated address");
 	    return usernameToAddress[_username];
 	}
 	
 	function cedeUsername() external hasUsername(msg.sender) {
-	    _withdrawBalance(msg.sender); // TODO change to simply adding withdrawable balance to some count to be withdrawn later (maybe?)	    
-	    string memory username = addressToUser[msg.sender].username;
+	    _addWithdrawableBalance(msg.sender); 
+	    bytes32 username = addressToUser[msg.sender].username;
 	    delete usernameToAddress[username];
 	    delete addressToUser[msg.sender];
+	    delete usernameToContactCard[username];
 	    emit CedeEvent(msg.sender, username);
 	}
 	
@@ -92,10 +106,10 @@ contract Resolv {
 	    _transferUsername(msg.sender, _to);
 	}
 	
-	function buyUsername(string memory _username) external hasNoUsername(msg.sender) {
+	function buyUsername(bytes32 _username) external hasNoUsername(msg.sender) {
 	    // TODO consider allowing a hash of the username to be requested first to prevent frontrunning
 	    address prevOwner = usernameToAddress[_username];
-	    uint price = getPrice(prevOwner);
+	    uint price = getEffectivePrice(prevOwner);
 	    if (price == 0) {
 	        _transferUsername(prevOwner, msg.sender);
 	        return;
@@ -108,50 +122,63 @@ contract Resolv {
 	
 	
 	function _transferUsername(address _from, address _to) private hasUsername(_from) hasNoUsername(_to) {
-	    _withdrawBalance(_from); // TODO change to simply adding withdrawable balance to some count to be withdrawn later (maybe?)	    
+	    _addWithdrawableBalance(_from);	    
 	    
 	    UserStruct memory user = addressToUser[_from];
-	    user = UserStruct(user.username, "", "", 0, MAX_INT, 0, block.number, block.number, true);
+	    user = UserStruct(user.username, MAX_INT, 0, block.number, block.number, true);
 	    addressToUser[_to] = user;
 	    usernameToAddress[user.username] = _to;
 	    
 	    delete addressToUser[_from];
+	    delete usernameToContactCard[user.username];
 	    emit TransferUsernameEvent(_from, _to, user.username);
 	}
 	
 	function _setDefaultPrice(uint _price) private {
+	    // TODO prevent griefers from being able to set something like MAX_INT as the default price
 	    defaultPrice = _price;
+	    emit DefaultPriceSet(_price);
 	}
 	
 	function _setCostPerBlock(uint _cost) private {
+	    // TODO prevent griefers from being able to set something like MAX_INT as the cost per block
 	    costPerBlockCheckpoints.push(CheckPoint(block.number, _cost));
 	    costPerBlock = _cost;
+	    emit CostPerBlockSet(_cost);
 	}
 
     function setPreferredPrice(uint _price) external hasUsername(msg.sender) {
         UserStruct storage user = addressToUser[msg.sender];
-        // TODO If balance becomes 0 and price is above default, need to readjust to default
-        user.price = _price;
+        user.preferredPrice = _price;
     }
     
-    function getPrice(address _addr) public view hasUsername(_addr) returns (uint) {
+    function getEffectivePrice(address _addr) public view hasUsername(_addr) returns (uint) {
         UserStruct memory user = addressToUser[_addr];
-        if(hasPositiveBalance(_addr) || user.price <= defaultPrice) {
-            return user.price;
+        if(hasPositiveBalance(_addr) || user.preferredPrice <= defaultPrice) {
+            return user.preferredPrice;
         }
         return defaultPrice;
     }
     
     function _withdrawBalance(address _from) private hasUsername(_from) {
-        UserStruct storage user = addressToUser[msg.sender];
-        // TODO Calculate fees and burn/distribute them
-        uint balance = getBalance(_from);
+        uint balance = withdrawableBalance[_from];
         require(balance > 0, "User doesn't have a positive balance");
-        // TODO Refund ERC-20 balance
+        withdrawableBalance[_from] = 0;
+        // TODO Refund ERC-20 token
+    }
+    
+    function _addWithdrawableBalance(address _from) private hasUsername(_from) {
+        (uint balance, uint fees) = getBalance(_from);
+        UserStruct storage user = addressToUser[msg.sender];
+
+        _collectFees(fees);
+        
+        withdrawableBalance[_from] += balance;
         user.balance = 0;
     }
     
-    function withdrawBalance() public {
+    function withdrawBalance() external {
+        _addWithdrawableBalance(msg.sender);
         _withdrawBalance(msg.sender);
     }
     
@@ -160,7 +187,8 @@ contract Resolv {
         // TODO reduce ERC-20 token balance by amount
         // TODO Calculate fees and burn/distribute them
         UserStruct storage user = addressToUser[_to];
-        user.balance = getBalance(_to) + amount; // TODO Safemath
+        (user.balance,) = getBalance(_to);
+        user.balance += amount; // TODO Safemath
         user.lastDeposit = block.number;
         
     }
@@ -168,6 +196,23 @@ contract Resolv {
     function depositBalance(uint amount) external {
         _depositBalance(msg.sender, amount);
     }
+    
+    function getBalance(address _addr) public view hasUsername(_addr) returns (uint, uint ) {
+        UserStruct memory user = addressToUser[_addr];
+        uint owedFees = _calculateFees(user.lastDeposit);       
+        int remaining = int(user.balance) - int(owedFees);      // TODO Safemath
+        if (remaining > 0) {
+            return (uint(remaining), owedFees);
+        }
+        else {
+            return (0, owedFees);
+        }
+    }
+    
+    function hasPositiveBalance(address _addr) public view returns (bool) {
+        (uint balance,) = getBalance(_addr);
+	    return balance > 0;
+	}
     
     function _calculateFees(uint _lastDeposit) private view returns (uint) {
         uint fees = 0;
@@ -197,20 +242,11 @@ contract Resolv {
         return fees;
     }
     
-    function getBalance(address _addr) public view hasUsername(_addr) returns (uint) {
-        UserStruct memory user = addressToUser[_addr];
-        uint owedFees = _calculateFees(user.lastDeposit);       
-        int remaining = int(user.balance) - int(owedFees);      // TODO Safemath
-        if (remaining > 0) {
-            return uint(remaining);
-        }
-        else {
-            return 0;
-        }
+    function _collectFees(uint _fees) private {
+        //TODO decide how much should be burned versus distributed
+        //TODO Safemath
+        burnableFees += _fees;
     }
     
-    function hasPositiveBalance(address _addr) public view returns (bool) {
-	    return getBalance(_addr) > 0;
-	}
 	
 }
