@@ -1,28 +1,29 @@
-
+// contracts/resolv.sol
 // SPDX-License-Identifier: UNLICENSED
 
 pragma solidity >=0.7.0 <0.9.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "./IERC20Burnable.sol";
 
 uint256 constant MAX_INT = 2**256 - 1;
 
 contract Resolv is Ownable{
-	mapping (address => UserStruct) private addressToUser;
-	mapping (bytes32 => address) private usernameToAddress;
-	mapping (bytes32 => ContactCard) private usernameToContactCard;
+	mapping (address => UserAccount) private addressToUser;
+	mapping (string => address) private usernameToAddress;
+	mapping (string => ContactCard) private usernameToContactCard;
 	mapping (address => uint) private withdrawableBalance;
 	
 	uint public defaultPrice;
 	uint public costPerBlock;
 	uint public burnableFees;
-	uint public distributableFees;
-	
+
 	CheckPoint[] private costPerBlockCheckpoints;
 	
+	IERC20Burnable resolvToken;
 	
-	struct UserStruct {
-	    bytes32 username;
+	struct UserAccount {
+	    string username;
 	    uint preferredPrice;
 	    uint balance;
 	    uint lastTransfer;
@@ -41,16 +42,17 @@ contract Resolv is Ownable{
 	    uint value;
 	}
 	
-	event CedeEvent(address _from, bytes32 username);
-	event RegisterUsernameEvent(address _from, bytes32 username);
-	event TransferUsernameEvent(address _from, address _to, bytes32 username);
-	event SellUsernameEvent(address _from, address _to, bytes32 username, uint price);
+	event CedeEvent(address _from, string username);
+	event RegisterUsernameEvent(address _from, string username);
+	event TransferUsernameEvent(address _from, address _to, string username);
+	event SellUsernameEvent(address _from, address _to, string username, uint price);
 	event CostPerBlockSet(uint _cost);
 	event DefaultPriceSet(uint _price);
 
-	constructor(uint _defaultPrice, uint _costPerBlock) {
+	constructor(uint _defaultPrice, uint _costPerBlock, address _resolvTokenAddress) {
 	    _setDefaultPrice(_defaultPrice);
 	    _setCostPerBlock(_costPerBlock);
+	    resolvToken = IERC20Burnable(_resolvTokenAddress);
 	}
 	
 	modifier hasUsername(address _addr) {
@@ -63,24 +65,27 @@ contract Resolv is Ownable{
 	    _;
 	}
 	
-	function registerUsername(bytes32 _username) external hasNoUsername(msg.sender) {
+	
+	function registerUsername(string memory _username) external hasNoUsername(msg.sender) {
 	    // TODO consider allowing a hash of the username to be requested first to prevent frontrunning
 	    require(usernameToAddress[_username] ==  address(0x0), "Username already taken");
-	    UserStruct memory newUser = UserStruct(_username, MAX_INT, 0, block.number, block.number, true);
+	    require(bytes(_username).length < 64, "Username must be less than 64 bytes");
+
+	    UserAccount memory newUser = UserAccount(_username, MAX_INT, 0, block.number, block.number, true);
 	    addressToUser[msg.sender] = newUser;
 	    usernameToAddress[_username] = msg.sender;
 	    emit RegisterUsernameEvent(msg.sender, _username);
 	}
 	
 	function setContactCard(string memory _name, string memory _email, uint16 _telephoneNumber) external hasUsername(msg.sender) {
-	    UserStruct storage user = addressToUser[msg.sender];
+	    UserAccount storage user = addressToUser[msg.sender];
 	    ContactCard memory newContactCard = ContactCard(_name, _email, _telephoneNumber);
 	    usernameToContactCard[user.username] = newContactCard;
 	    // TODO Maybe emit event?
 	}
 	
-	function getUsername(address _addr) external view hasUsername(_addr) returns (UserStruct memory, ContactCard memory) {
-	    UserStruct memory userRaw = addressToUser[_addr];
+	function getUserAccount(address _addr) external view hasUsername(_addr) returns (UserAccount memory, ContactCard memory) {
+	    UserAccount memory userRaw = addressToUser[_addr];
 	    userRaw.preferredPrice = getEffectivePrice(_addr);
 	    (userRaw.balance,) = getBalance(_addr);
 	    
@@ -88,14 +93,14 @@ contract Resolv is Ownable{
 	    return (userRaw, contactCard);
 	}
 	
-	function getAddress(bytes32 _username) external view returns (address) {
+	function getAddress(string memory _username) external view returns (address) {
 	    require(usernameToAddress[_username] != address(0x0), "Username has no associated address");
 	    return usernameToAddress[_username];
 	}
 	
 	function cedeUsername() external hasUsername(msg.sender) {
 	    _addWithdrawableBalance(msg.sender); 
-	    bytes32 username = addressToUser[msg.sender].username;
+	    string memory username = addressToUser[msg.sender].username;
 	    delete usernameToAddress[username];
 	    delete addressToUser[msg.sender];
 	    delete usernameToContactCard[username];
@@ -106,7 +111,7 @@ contract Resolv is Ownable{
 	    _transferUsername(msg.sender, _to);
 	}
 	
-	function buyUsername(bytes32 _username) external hasNoUsername(msg.sender) {
+	function buyUsername(string memory _username) external hasNoUsername(msg.sender) {
 	    // TODO consider allowing a hash of the username to be requested first to prevent frontrunning
 	    address prevOwner = usernameToAddress[_username];
 	    uint price = getEffectivePrice(prevOwner);
@@ -114,18 +119,18 @@ contract Resolv is Ownable{
 	        _transferUsername(prevOwner, msg.sender);
 	        return;
 	    }
-	    // TODO Check to make sure buyer has enough money
-	    // TODO Check to make sure contract is approved for enough to spend on behalf of buyer
+	    require(resolvToken.transferFrom(msg.sender, prevOwner, price), "RSLV transfer failed during buy");
 	    // TODO Burn part of the cost
 	    _transferUsername(prevOwner, msg.sender);
+	    emit SellUsernameEvent(prevOwner, msg.sender, _username, price);
 	}
 	
 	
 	function _transferUsername(address _from, address _to) private hasUsername(_from) hasNoUsername(_to) {
 	    _addWithdrawableBalance(_from);	    
 	    
-	    UserStruct memory user = addressToUser[_from];
-	    user = UserStruct(user.username, MAX_INT, 0, block.number, block.number, true);
+	    UserAccount memory user = addressToUser[_from];
+	    user = UserAccount(user.username, MAX_INT, 0, block.number, block.number, true);
 	    addressToUser[_to] = user;
 	    usernameToAddress[user.username] = _to;
 	    
@@ -148,28 +153,28 @@ contract Resolv is Ownable{
 	}
 
     function setPreferredPrice(uint _price) external hasUsername(msg.sender) {
-        UserStruct storage user = addressToUser[msg.sender];
+        UserAccount storage user = addressToUser[msg.sender];
         user.preferredPrice = _price;
     }
     
     function getEffectivePrice(address _addr) public view hasUsername(_addr) returns (uint) {
-        UserStruct memory user = addressToUser[_addr];
+        UserAccount memory user = addressToUser[_addr];
         if(hasPositiveBalance(_addr) || user.preferredPrice <= defaultPrice) {
             return user.preferredPrice;
         }
         return defaultPrice;
     }
     
-    function _withdrawBalance(address _from) private hasUsername(_from) {
-        uint balance = withdrawableBalance[_from];
-        require(balance > 0, "User doesn't have a positive balance");
+    function _withdrawBalance(address _from) private {
+        uint withdrawAmount = withdrawableBalance[_from];
+        require(withdrawAmount > 0, "Address doesn't have anything to withdraw");
         withdrawableBalance[_from] = 0;
-        // TODO Refund ERC-20 token
+        require(resolvToken.transferFrom(address(this), _from, withdrawAmount), "RSLV transfer failed during withdraw");
     }
     
     function _addWithdrawableBalance(address _from) private hasUsername(_from) {
         (uint balance, uint fees) = getBalance(_from);
-        UserStruct storage user = addressToUser[msg.sender];
+        UserAccount storage user = addressToUser[msg.sender];
 
         _collectFees(fees);
         
@@ -178,34 +183,37 @@ contract Resolv is Ownable{
     }
     
     function withdrawBalance() external {
-        _addWithdrawableBalance(msg.sender);
+        if (addressToUser[msg.sender].exists) {
+            _addWithdrawableBalance(msg.sender);
+        }
         _withdrawBalance(msg.sender);
     }
     
-    function _depositBalance(address _to, uint amount) private hasUsername(_to) {
-        // TODO verify user has amount of ERC-20 token
-        // TODO reduce ERC-20 token balance by amount
-        // TODO Calculate fees and burn/distribute them
-        UserStruct storage user = addressToUser[_to];
-        (user.balance,) = getBalance(_to);
-        user.balance += amount; // TODO Safemath
+    function _depositBalance(address _to, uint _amount) private hasUsername(_to) {
+        resolvToken.transferFrom(_to, address(this), _amount);
+        UserAccount storage user = addressToUser[_to];
+        uint feesTaken = 0;
+        (user.balance, feesTaken) = getBalance(_to);
+        _collectFees(feesTaken);
+        user.balance += _amount; // TODO Safemath
         user.lastDeposit = block.number;
-        
     }
     
-    function depositBalance(uint amount) external {
-        _depositBalance(msg.sender, amount);
+    function depositBalance(address _to, uint amount) external {
+        _depositBalance(_to, amount);
     }
     
     function getBalance(address _addr) public view hasUsername(_addr) returns (uint, uint ) {
-        UserStruct memory user = addressToUser[_addr];
+        UserAccount memory user = addressToUser[_addr];
         uint owedFees = _calculateFees(user.lastDeposit);       
         int remaining = int(user.balance) - int(owedFees);      // TODO Safemath
         if (remaining > 0) {
+            // Return how must is left after fees and the amount paid in fees
             return (uint(remaining), owedFees);
         }
         else {
-            return (0, owedFees);
+            // If the fees exceed their balance, return a balance of 0 and their balance as fees paid
+            return (0, user.balance);
         }
     }
     
@@ -243,9 +251,14 @@ contract Resolv is Ownable{
     }
     
     function _collectFees(uint _fees) private {
-        //TODO decide how much should be burned versus distributed
         //TODO Safemath
         burnableFees += _fees;
+    }
+    
+    function burnFees() public {
+        require(burnableFees > 0, "No fees to burn");
+        resolvToken.burn(burnableFees);
+        burnableFees = 0;
     }
     
 	
