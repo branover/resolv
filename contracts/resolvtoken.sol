@@ -1,4 +1,4 @@
-// contracts/resolvtoken.sol
+// contracts/ResolvToken.sol
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.0;
 

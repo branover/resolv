@@ -1,7 +1,7 @@
 // contracts/resolv.sol
 // SPDX-License-Identifier: UNLICENSED
 
-pragma solidity >=0.7.0 <0.9.0;
+pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./ResolvToken.sol";
@@ -71,7 +71,7 @@ contract ResolvGovernance is Ownable {
             giveawayAllocationSoFar += giveawayFunds[i].totalAllocated;
         }
         //TODO safemath
-        require((giveawayAllocationSoFar + _allocation) <= giveawayAllocation, "Giveaway can't be allocated this much");
+        require((giveawayAllocationSoFar + _allocation) <= giveawayAllocation, "Allocation exceeds maximum");
         giveawayFunds.push(DistributionFund(_addr, _allocation, 0));
         resolvToken.approve(_addr, _allocation);
     }
@@ -88,7 +88,7 @@ contract ResolvGovernance is Ownable {
             stakingAllocationSoFar += stakingFunds[i].totalAllocated;
         }
         //TODO safemath
-        require((stakingAllocationSoFar + _allocation) <= stakingAllocation, "Staking fund can't be allocated this much");
+        require((stakingAllocationSoFar + _allocation) <= stakingAllocation, "Allocation exceeds maximum");
         stakingFunds.push(DistributionFund(_addr, _allocation, 0));
         resolvToken.approve(_addr, _allocation);
     }
