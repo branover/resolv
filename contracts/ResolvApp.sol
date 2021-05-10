@@ -103,8 +103,8 @@ contract ResolvApp is Ownable{
 	    _addWithdrawableBalance(msg.sender); 
 	    string memory username = addressToUser[msg.sender].username;
 	    delete usernameToAddress[username];
-	    delete addressToUser[msg.sender];
 	    delete usernameToContactCard[username];
+	    delete addressToUser[msg.sender];
 	    emit CedeEvent(msg.sender, username);
 	}
 	
@@ -120,7 +120,7 @@ contract ResolvApp is Ownable{
 	        _transferUsername(prevOwner, msg.sender);
 	        return;
 	    }
-	    require(resolvToken.transferFrom(msg.sender, prevOwner, price), "RSLV transfer failed during buy");
+	    resolvToken.transferFrom(msg.sender, prevOwner, price);
 	    // TODO Burn part of the cost
 	    _transferUsername(prevOwner, msg.sender);
 	    emit SellUsernameEvent(prevOwner, msg.sender, _username, price);

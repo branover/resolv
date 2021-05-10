@@ -23,10 +23,12 @@ contract ResolvGovernance is Ownable {
     }
     
     DistributionFund public developerFund;
-    DistributionFund[] public giveawayFunds;
-    DistributionFund[] public stakingFunds;
-    uint public giveawayAllocation;
-    uint public stakingAllocation;
+    mapping (address => DistributionFund) public giveawayFunds;
+    mapping (address => DistributionFund) public stakingFunds;
+    uint public giveawayTotalAllocation;
+    uint public giveawayAllocationSoFar;
+    uint public stakingTotalAllocation;
+    uint public stakingAllocationSoFar;
     
     
     constructor() {
@@ -40,9 +42,19 @@ contract ResolvGovernance is Ownable {
         // TODO set owner or admin
         
         developerFund = DistributionFund(owner(), (initialSupply / 10) * 3, 0); // 30% allocated to developer fund, 10% initially, another 20% vested over 4 years
-        giveawayAllocation = (initialSupply / 10) * 2; // 20% allocated to giveaway funds
-        stakingAllocation = (initialSupply / 10) * 5; // 50% allocated to staking funds
-        assert(developerFund.totalAllocated + giveawayAllocation + stakingAllocation == initialSupply);
+        giveawayTotalAllocation = (initialSupply / 10) * 2; // 20% allocated to giveaway funds
+        stakingTotalAllocation = (initialSupply / 10) * 5; // 50% allocated to staking funds
+        assert(developerFund.totalAllocated + giveawayTotalAllocation + stakingTotalAllocation == initialSupply);
+    }
+    
+    modifier onlyGiveawayFund() {
+        require(giveawayFunds[msg.sender].fundAddress == msg.sender, "Caller not a giveaway fund");
+        _;
+    }
+    
+    modifier onlyStakingFund() {
+        require(stakingFunds[msg.sender].fundAddress == msg.sender, "Caller not a staking fund");
+        _;
     }
     
     function developerFundClaimable() public view returns (uint) {
@@ -66,35 +78,37 @@ contract ResolvGovernance is Ownable {
     function _addGiveawayFund(address _addr, uint _allocation) internal {
         require(_addr != address(0), "Fund is the zero address");
         require(_allocation > 0, "Allocation is zero");
-        uint giveawayAllocationSoFar = 0;
-        for (uint i = 0; i < giveawayFunds.length; i++) {
-            giveawayAllocationSoFar += giveawayFunds[i].totalAllocated;
-        }
-        //TODO safemath
-        require((giveawayAllocationSoFar + _allocation) <= giveawayAllocation, "Allocation exceeds maximum");
-        giveawayFunds.push(DistributionFund(_addr, _allocation, 0));
-        resolvToken.approve(_addr, _allocation);
+        require((giveawayAllocationSoFar + _allocation) <= giveawayTotalAllocation, "Allocation exceeds maximum");
+        giveawayAllocationSoFar += _allocation;
+        giveawayFunds[_addr].fundAddress = _addr;
+        giveawayFunds[_addr].totalAllocated += _allocation;
+        resolvToken.increaseAllowance(_addr, _allocation);
     }
     
     function addGiveawayFund(address _addr, uint _allocation) external onlyOwner {
         _addGiveawayFund(_addr, _allocation);
     }
     
+    function reportGiveawayClaimed(uint _amount) external onlyGiveawayFund {
+        giveawayFunds[msg.sender].totalClaimed += _amount;
+    }
+    
     function _addStakingFund(address _addr, uint _allocation) internal {
         require(_addr != address(0), "Fund is the zero address");
         require(_allocation > 0, "Allocation is zero");
-        uint stakingAllocationSoFar = 0;
-        for (uint i = 0; i < stakingFunds.length; i++) {
-            stakingAllocationSoFar += stakingFunds[i].totalAllocated;
-        }
-        //TODO safemath
-        require((stakingAllocationSoFar + _allocation) <= stakingAllocation, "Allocation exceeds maximum");
-        stakingFunds.push(DistributionFund(_addr, _allocation, 0));
-        resolvToken.approve(_addr, _allocation);
+        require((stakingAllocationSoFar + _allocation) <= stakingTotalAllocation, "Allocation exceeds maximum");
+        stakingAllocationSoFar += _allocation;
+        stakingFunds[_addr].fundAddress = _addr;
+        stakingFunds[_addr].totalAllocated += _allocation;
+        resolvToken.increaseAllowance(_addr, _allocation);
     }
     
     function addStakingFund(address _addr, uint _allocation) external onlyOwner {
         _addStakingFund(_addr, _allocation);
+    }
+    
+    function reportStakingRewardClaimed(uint _amount) external onlyStakingFund {
+        stakingFunds[msg.sender].totalClaimed += _amount;
     }
     
 

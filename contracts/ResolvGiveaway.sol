@@ -10,7 +10,7 @@ import "./ResolvGovernance.sol";
 contract ResolvGiveaway is Ownable {
     mapping (address => uint) internal claimed;
     IERC20 internal resolvToken;
-    address internal resolvGovernance;
+    ResolvGovernance internal resolvGovernance;
 
     bool public active;
     uint public claimablePerAddress;
@@ -20,7 +20,7 @@ contract ResolvGiveaway is Ownable {
     constructor(address _resolvToken, address _resolvGovernance, uint _claimablePerAddress, uint _totalAllocated) {
         resolvToken = IERC20(_resolvToken);
         claimablePerAddress = _claimablePerAddress;
-        resolvGovernance = _resolvGovernance;
+        resolvGovernance = ResolvGovernance(_resolvGovernance);
         totalAllocated = _totalAllocated;
     }
     
@@ -44,7 +44,8 @@ contract ResolvGiveaway is Ownable {
         require(toClaim > 0, "Can't claim any more");
         totalClaimed += toClaim;
         claimed[msg.sender] = claimablePerAddress;
-        resolvToken.transferFrom(resolvGovernance, msg.sender, toClaim);
+        resolvToken.transferFrom(address(resolvGovernance), msg.sender, toClaim);
+        resolvGovernance.reportGiveawayClaimed(toClaim);
     }
     
 }
